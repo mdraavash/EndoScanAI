@@ -1,3 +1,8 @@
+import mimetypes
+mimetypes.add_type('text/css', '.css')
+mimetypes.add_type('application/javascript', '.js')
+
+# ... keep the rest of your imports below
 import traceback
 import uuid
 from pathlib import Path
