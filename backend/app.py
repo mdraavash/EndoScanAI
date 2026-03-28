@@ -11,7 +11,9 @@ import nibabel as nib
 from config import OUTPUT_DIR
 from models.nnunet_infer import run_nnunet_inference
 from models.yolo_infer import run_yolo_inference
+from models.classifier_infer import run_classifier_inference
 from utils.fileops import save_uploads, cleanup
+from utils.image import save_raw_preview
 
 app = FastAPI(title='EndoScan AI Backend')
 
@@ -20,10 +22,11 @@ app.add_middleware(
     allow_origins=['*'],
     allow_credentials=True,
     allow_methods=['*'],
-    allow_headers=['*']
+    allow_headers=['*'],
+    expose_headers=['Content-Disposition'],
 )
 
-# Serve frontend static files
+# ── Static files ───────────────────────────────────────────────────────────────
 frontend_dir = Path(__file__).resolve().parent.parent / 'frontend'
 if frontend_dir.exists():
     app.mount('/static', StaticFiles(directory=str(frontend_dir)), name='static')
@@ -31,64 +34,106 @@ if frontend_dir.exists():
 
 @app.get('/')
 async def root():
-    """Serve the default homepage (index.html)"""
     index_file = frontend_dir / 'index.html'
     if index_file.exists():
         return FileResponse(str(index_file), media_type='text/html')
     return JSONResponse(status_code=404, content={'detail': 'index.html not found'})
 
 
+@app.get('/app')
+async def app_page():
+    app_file = frontend_dir / 'app.html'
+    if app_file.exists():
+        return FileResponse(str(app_file), media_type='text/html')
+    return JSONResponse(status_code=404, content={'detail': 'app.html not found'})
+
+
+# ── Predict endpoint ───────────────────────────────────────────────────────────
 @app.post('/predict')
 async def predict(
-    modality: str = Form(...),
+    modality:   str = Form(...),
     model_type: str = Form(...),
     files: list[UploadFile] = File(...)
 ):
     if modality not in ['ct', 'ctpet']:
-        raise HTTPException(status_code=400, detail='Unsupported modality')
-    if model_type not in ['segmentation', 'detection']:
-        raise HTTPException(status_code=400, detail='Unsupported model_type')
+        raise HTTPException(status_code=400, detail='Unsupported modality. Use ct or ctpet.')
+    if model_type not in ['segmentation', 'detection', 'classification']:
+        raise HTTPException(status_code=400, detail='Unsupported model_type.')
 
     tmp_dir = None
     try:
         tmp_dir, input_paths = save_uploads(files)
 
+        # ── Segmentation ─────────────────────────────────────────────────────
         if model_type == 'segmentation':
             output_path, preview_path, err = run_nnunet_inference(tmp_dir, input_paths, modality)
             if err:
-                return JSONResponse(status_code=200, content={'status': 'error', 'detail': err, 'modality': modality, 'model': model_type})
+                return JSONResponse(status_code=200, content={
+                    'status': 'error', 'detail': err,
+                    'modality': modality, 'model': model_type
+                })
 
             mask_data = nib.load(str(output_path)).get_fdata()
             stats = {
-                'volume_cc': float((mask_data > 0).sum()),
-                'voxel_count': int((mask_data > 0).sum())
+                'volume_cc':   float((mask_data > 0).sum()),
+                'voxel_count': int((mask_data > 0).sum()),
             }
+
+            # Save a raw CT slice preview (first input file)
+            raw_preview_path = None
+            try:
+                raw_preview_path = save_raw_preview(input_paths[0], OUTPUT_DIR)
+            except Exception:
+                pass  # non-fatal
 
             result = {
-                'status': 'done',
-                'job_id': uuid.uuid4().hex,
+                'status':   'done',
+                'job_id':   uuid.uuid4().hex,
                 'modality': modality,
-                'model': model_type,
-                'stats': stats,
-                'download': f'/download/{output_path.name}'
+                'model':    model_type,
+                'stats':    stats,
+                'download': f'/download/{output_path.name}',
             }
-            if preview_path is not None:
+            if preview_path:
                 result['preview'] = f'/download/{preview_path.name}'
+            if raw_preview_path:
+                result['raw_preview'] = f'/download/{raw_preview_path.name}'
             return result
 
-        detections, inference_images, err = run_yolo_inference(input_paths, modality)
-        if err:
-            return JSONResponse(status_code=200, content={'status': 'error', 'detail': err, 'modality': modality, 'model': model_type})
+        # ── Detection ─────────────────────────────────────────────────────────
+        if model_type == 'detection':
+            detections, inference_images, err = run_yolo_inference(input_paths, modality)
+            if err:
+                return JSONResponse(status_code=200, content={
+                    'status': 'error', 'detail': err,
+                    'modality': modality, 'model': model_type
+                })
+            return {
+                'status':          'done',
+                'job_id':          uuid.uuid4().hex,
+                'modality':        modality,
+                'model':           model_type,
+                'stats':           {'volume_cc': None, 'voxel_count': None},
+                'detections':      detections,
+                'inference_images': inference_images,
+                'download':        None,
+            }
 
+        # ── Classification ────────────────────────────────────────────────────
+        probability, label, confidence, err = run_classifier_inference(input_paths, modality)
+        if err:
+            return JSONResponse(status_code=200, content={
+                'status': 'error', 'detail': err,
+                'modality': modality, 'model': model_type
+            })
         return {
-            'status': 'done',
-            'job_id': uuid.uuid4().hex,
-            'modality': modality,
-            'model': model_type,
-            'stats': {'volume_cc': None, 'voxel_count': None},
-            'detections': detections,
-            'inference_images': inference_images,
-            'download': None
+            'status':      'done',
+            'job_id':      uuid.uuid4().hex,
+            'modality':    modality,
+            'model':       model_type,
+            'probability': probability,
+            'label':       label,
+            'confidence':  confidence,
         }
 
     except Exception as ex:
@@ -99,10 +144,28 @@ async def predict(
         cleanup(tmp_dir)
 
 
+# ── Download endpoint ──────────────────────────────────────────────────────────
 @app.get('/download/{fname}')
 async def download(fname: str):
+    # Safety: only alphanumeric, dash, underscore, dot allowed
+    if any(c in fname for c in ('/', '\\', '..', '<', '>')):
+        raise HTTPException(status_code=400, detail='Invalid filename')
+
     out_file = OUTPUT_DIR / fname
     if not out_file.exists():
         raise HTTPException(status_code=404, detail='File not found')
-    media_type = 'image/png' if out_file.suffix == '.png' else 'application/gzip'
-    return FileResponse(str(out_file), media_type=media_type, filename=fname)
+
+    suffix = out_file.suffix.lower()
+    if suffix == '.png':
+        media_type = 'image/png'
+    elif suffix in ('.gz', '.nii'):
+        media_type = 'application/gzip'
+    else:
+        media_type = 'application/octet-stream'
+
+    return FileResponse(
+        str(out_file),
+        media_type=media_type,
+        filename=fname,
+        headers={'Content-Disposition': f'attachment; filename="{fname}"'},
+    )
