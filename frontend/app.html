@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EndoScan AI — Scan Analysis</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+    <link rel="stylesheet" href="/static/css/app.css" />
+</head>
+<body>
+
+<!-- ── Nav ── -->
+<nav class="nav">
+  <div class="nav-logo">
+    <div class="nav-logo-mark">ES</div>
+    EndoScan AI
+  </div>
+  <div class="nav-links">
+    <a href="/">← Home</a>
+    <a href="/app" class="active">Analysis</a>
+  </div>
+</nav>
+
+<div class="app-shell">
+
+  <!-- ── Sidebar ── -->
+  <aside class="sidebar">
+
+    <div class="sidebar-section">
+      <div class="sidebar-label">Modality</div>
+      <div class="toggle-group">
+        <button class="tog active" data-group="modality" data-value="ct">CT</button>
+        <button class="tog" data-group="modality" data-value="ctpet">CT-PET</button>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-label">Model</div>
+      <div class="toggle-group tri">
+        <button class="tog active" data-group="model" data-value="segmentation">Seg</button>
+        <button class="tog" data-group="model" data-value="detection">Det</button>
+        <button class="tog" data-group="model" data-value="classification">Cls</button>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-label">Input Files <span id="file-hint" style="color:var(--accent);float:right">max 1</span></div>
+      <div class="dropzone" id="dropzone">
+        <input type="file" id="file-input" accept=".nii,.gz,.dcm" multiple />
+        <div class="dz-icon">⬡</div>
+        <div class="dz-text">
+          <strong>Drop files here</strong>
+          .nii · .nii.gz · .dcm
+        </div>
+        <div id="file-list"></div>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="err-msg" id="err-msg"></div>
+      <button class="run-btn" id="run-btn" disabled>▶ Run Inference</button>
+    </div>
+
+    <div class="sidebar-section" style="flex:1">
+      <div class="sidebar-label">Console</div>
+      <div class="log" id="log">// system ready
+</div>
+    </div>
+
+  </aside>
+
+  <!-- ── Main viewer ── -->
+  <div class="viewer-area">
+
+    <div class="tab-bar">
+      <div class="tab active" data-tab="viewer">Viewer</div>
+      <div class="tab" data-tab="detection" id="tab-det">Detection <span class="tab-badge" id="det-count" style="display:none"></span></div>
+      <div class="tab" data-tab="classification" id="tab-cls">Classification <span class="tab-badge warn" id="cls-badge" style="display:none"></span></div>
+    </div>
+
+    <div class="panels">
+
+      <!-- ── Viewer tab ── -->
+      <div class="panel active" id="panel-viewer">
+        <div class="image-viewer">
+          <div class="view-controls" id="view-controls" style="display:none">
+            <button class="view-btn active" data-view="raw">Raw CT</button>
+            <button class="view-btn" data-view="mask">Mask</button>
+            <button class="view-btn" data-view="overlay">Overlay</button>
+          </div>
+
+          <div class="img-card" id="img-card">
+            <div class="img-card-topbar">
+              <div class="dot r"></div><div class="dot y"></div><div class="dot g"></div>
+              <span class="lbl" id="img-lbl">AWAITING INPUT</span>
+            </div>
+            <div class="img-stage" id="img-stage">
+              <div class="placeholder" id="placeholder">
+                <div class="ph-ring" id="ph-ring"></div>
+                <span class="ph-txt">// no scan loaded</span>
+              </div>
+              <div id="view-raw"  style="display:none"><img id="img-raw"  alt="Raw CT slice"/></div>
+              <div id="view-mask" style="display:none"><img id="img-mask" alt="Segmentation mask"/></div>
+              <div id="view-overlay" style="display:none">
+                <canvas id="overlay-canvas"></canvas>
+              </div>
+            </div>
+            <div class="stats-strip" id="stats-strip" style="display:none">
+              <div class="stat-item"><span class="stat-lbl">Voxels</span><span class="stat-val" id="sv">—</span></div>
+              <div class="stat-item"><span class="stat-lbl">Volume cc</span><span class="stat-val" id="svol">—</span></div>
+              <div class="stat-item"><span class="stat-lbl">Slice</span><span class="stat-val">CENTER</span></div>
+              <div class="stat-item"><span class="stat-lbl">Model</span><span class="stat-val" id="smod">—</span></div>
+            </div>
+          </div>
+
+          <div class="dl-row" id="dl-row" style="display:none">
+            <button class="dl-btn teal" id="dl-mask">⬇ Download Mask (.nii.gz)</button>
+            <button class="dl-btn green" id="dl-preview">⬇ Download Preview (.png)</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Detection tab ── -->
+      <div class="panel" id="panel-detection">
+        <div class="det-panel" id="det-content">
+          <div class="empty-state" style="flex:1; min-height:300px">
+            <div class="icon">🔍</div>
+            <span>// run detection to see results</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Classification tab ── -->
+      <div class="panel" id="panel-classification">
+        <div class="cls-panel" id="cls-content">
+          <div class="empty-state" style="min-height:300px">
+            <div class="icon">🧬</div>
+            <span>// run classification to see results</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
