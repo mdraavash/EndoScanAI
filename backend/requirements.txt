@@ -1,9 +1,12 @@
-fastapi==0.116.0
-uvicorn[standard]==0.25.0
-numpy==1.26.5
-nibabel==5.0.1
-Pillow==10.0.0
-torch==2.0.1
+fastapi
+uvicorn
+numpy
+nibabel
+Pillow
+torch==2.2.1+cu121
+torchvision==0.17.1+cu121
+torchaudio==2.2.1+cu121
+--extra-index-url https://download.pytorch.org/whl/cu121
 nnunetv2
-ultralytics==8.1.0
-pydantic==2.9.0
+ultralytics
+pydantic
