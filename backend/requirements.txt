@@ -1,0 +1,9 @@
+fastapi==0.116.0
+uvicorn[standard]==0.25.0
+numpy==1.26.5
+nibabel==5.0.1
+Pillow==10.0.0
+torch==2.0.1
+nnunetv2
+ultralytics==8.1.0
+pydantic==2.9.0

@@ -1,0 +1,18 @@
+{
+    "channel_names": {
+        "0": "CT",
+        "1": "PET"
+    },
+    "labels": {
+        "background": 0,
+        "tumor": 1
+    },
+    "numTraining": 122,
+    "file_ending": ".nii.gz",
+    "dataset_name": "ECPC_IDS_PET_CT",
+    "description": "ECPC-IDS endometrial cancer PET+CT 2-channel. Train=122, Total=153. Native 512x512 @ 0.977mm. 2D config. Reference Dice: 0.546-0.743.",
+    "reference": "doi:10.1016/j.compbiomed.2024.108217",
+    "licence": "CC BY 4.0",
+    "release": "1.0",
+    "overwrite_image_reader_writer": "SimpleITKIO"
+}
