@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>EndoScan AI — Scan Analysis</title>
-  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="stylesheet" href="/static/css/Navbar.css" />
   <link rel="stylesheet" href="/static/css/app.css" />
 </head>
 <body>
@@ -43,10 +43,12 @@
       </div>
     </div>
 
+    <!-- File input lives outside the dropzone so Chrome doesn't block it -->
+    <input type="file" id="file-input" accept=".nii,.gz,.dcm" multiple style="display:none" />
+
     <div class="sidebar-section">
       <div class="sidebar-label">Input Files <span id="file-hint" style="color:var(--accent);float:right">max 1</span></div>
       <div class="dropzone" id="dropzone">
-        <input type="file" id="file-input" accept=".nii,.gz,.dcm" multiple />
         <div class="dz-icon">⬡</div>
         <div class="dz-text">
           <strong>Drop files here</strong>

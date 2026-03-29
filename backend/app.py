@@ -2,7 +2,6 @@ import mimetypes
 mimetypes.add_type('text/css', '.css')
 mimetypes.add_type('application/javascript', '.js')
 
-# ... keep the rest of your imports below
 import traceback
 import uuid
 from pathlib import Path
@@ -33,8 +32,12 @@ app.add_middleware(
 
 # ── Static files ───────────────────────────────────────────────────────────────
 frontend_dir = Path(__file__).resolve().parent.parent / 'frontend'
+print(f"Frontend dir: {frontend_dir}, exists: {frontend_dir.exists()}")
 if frontend_dir.exists():
-    app.mount('/static', StaticFiles(directory=str(frontend_dir)), name='static')
+    print("Mounting static files")
+    app.mount('/static', StaticFiles(directory='../frontend'), name='static')
+else:
+    print("Frontend dir not found")
 
 
 @app.get('/')
@@ -152,7 +155,7 @@ async def predict(
 # ── Download endpoint ──────────────────────────────────────────────────────────
 @app.get('/download/{fname}')
 async def download(fname: str):
-    # Safety: only alphanumeric, dash, underscore, dot allowed
+    # Safety: no path traversal
     if any(c in fname for c in ('/', '\\', '..', '<', '>')):
         raise HTTPException(status_code=400, detail='Invalid filename')
 
@@ -160,17 +163,19 @@ async def download(fname: str):
     if not out_file.exists():
         raise HTTPException(status_code=404, detail='File not found')
 
-    suffix = out_file.suffix.lower()
-    if suffix == '.png':
+    # Determine media type — handle double extension .nii.gz explicitly
+    name_lower = fname.lower()
+    if name_lower.endswith('.nii.gz') or name_lower.endswith('.gz') or name_lower.endswith('.nii'):
+        media_type = 'application/octet-stream'
+    elif name_lower.endswith('.png'):
         media_type = 'image/png'
-    elif suffix in ('.gz', '.nii'):
-        media_type = 'application/gzip'
     else:
         media_type = 'application/octet-stream'
 
+    # FileResponse handles Content-Disposition itself via filename=
+    # Do NOT also pass a headers dict with Content-Disposition — that causes duplicates
     return FileResponse(
-        str(out_file),
+        path=str(out_file),
         media_type=media_type,
-        filename=fname,
-        headers={'Content-Disposition': f'attachment; filename="{fname}"'},
+        filename=fname,          # sets Content-Disposition: attachment; filename="..."
     )

@@ -89,7 +89,17 @@ document.querySelectorAll('.tog').forEach(btn => {
 });
 
 // ── File handling ──────────────────────────────────
-fileInput.addEventListener('change', () => handleFiles(Array.from(fileInput.files)));
+// Input is hidden (display:none). Chrome blocks opacity:0 overlays from
+// opening file dialogs — trigger programmatically on dropzone click instead.
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length) handleFiles(Array.from(fileInput.files));
+});
+
+dropzone.addEventListener('click', () => {
+  fileInput.value = ''; // reset so same file can be re-selected
+  fileInput.click();
+});
+
 dropzone.addEventListener('dragover',  e => { e.preventDefault(); dropzone.classList.add('over'); });
 dropzone.addEventListener('dragleave', () => dropzone.classList.remove('over'));
 dropzone.addEventListener('drop', e => {
