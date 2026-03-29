@@ -697,8 +697,16 @@ nav.nav, .nav {
   font-size: 11px; color: var(--accent);
   box-shadow: 0 0 10px var(--glow);
 }
-nav.nav .nav-links, .nav .nav-links {
+nav.nav .nav-links, .nav .nav-links, .nav .nav-logo-link {
   display: flex; gap: 4px; margin-left: auto; align-items: center;
+}
+
+.nav .nav-logo-link { 
+  gap: 10px;
+  text-decoration: none; color: inherit;  
+  font-family: var(--syne);
+  font-size: 16px; font-weight: 800;
+  letter-spacing: 0.04em; color: #fff;
 }
 nav.nav .nav-links a, .nav .nav-links a {
   padding: 6px 14px;
