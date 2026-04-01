@@ -1,0 +1,16 @@
+{
+    "channel_names": {
+        "0": "CT"
+    },
+    "labels": {
+        "background": 0,
+        "uterus": 1
+    },
+    "numTraining": 153,
+    "file_ending": ".nii.gz",
+    "dataset_name": "ECPC_Uterus_CT",
+    "description": "Plain nnU-Net dataset for ECPC CT uterus segmentation",
+    "reference": "ECPC only",
+    "licence": "Check dataset licence",
+    "release": "1.0"
+}

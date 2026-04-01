@@ -281,9 +281,10 @@ function renderDet(data) {
     <div class="det-images">`;
     imgs.forEach(im => {
       const src = im.url.startsWith('http') ? im.url : `${API_BASE}${im.url}`;
+      const modLabel = im.modality ? ` <span style="opacity:0.6;font-size:11px;">(${im.modality})</span>` : '';
       html += `<div class="det-img-thumb">
         <img src="${src}" alt="Detection" loading="lazy" />
-        <div class="det-img-label">${im.image}</div>
+        <div class="det-img-label">${im.image}${modLabel}</div>
       </div>`;
     });
     html += `</div>`;
@@ -293,12 +294,13 @@ function renderDet(data) {
     html += `<div class="sidebar-label" style="margin-top:20px;font-family:var(--mono);font-size:10px;letter-spacing:3px;color:var(--muted);text-transform:uppercase;margin-bottom:10px;">Detection Table</div>
     <table class="det-table">
       <thead><tr>
-        <th>Image</th><th>Class</th><th>Confidence</th><th>Bbox (x1,y1,x2,y2)</th>
+        <th>Modality</th><th>Image</th><th>Class</th><th>Confidence</th><th>Bbox (x1,y1,x2,y2)</th>
       </tr></thead><tbody>`;
     dets.forEach(d => {
       const pct = (d.confidence * 100).toFixed(1);
       const w = Math.round(d.confidence * 80);
       html += `<tr>
+        <td>${d.modality || '—'}</td>
         <td>${d.image}</td>
         <td>${d.class}</td>
         <td>${pct}% <span class="conf-bar" style="width:${w}px"></span></td>
@@ -320,63 +322,47 @@ function renderDet(data) {
 
 // ── Render classification result ───────────────────
 function renderCls(data) {
-  hideSpinner();
-  imgLbl.textContent = 'CLASSIFICATION COMPLETE';
+  const prob = (data.probability * 100).toFixed(2);
+  const isHigh = data.label.toLowerCase().includes('high');
+  
+  // Choose color based on probability
+  let color = 'var(--accent2)'; // Low (Blue/Green)
+  if (prob > 40) color = 'var(--warn)'; // Mid (Orange)
+  if (prob > 70) color = 'var(--accent3)'; // High (Red)
 
-  // Switch to classification tab
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  document.querySelector('.tab[data-tab="classification"]').classList.add('active');
-  $('panel-classification').classList.add('active');
+  $('cls-content').innerHTML = `
+    <div class="risk-container" style="padding: 20px; text-align: center;">
+      <h3 style="font-family: var(--syne); font-size: 22px; color: #e8f4fa; margin-bottom: 30px;">
+        Malignancy Analysis
+      </h3>
 
-  const prob    = data.probability ?? 0;          // 0–1
-  const pct     = Math.round(prob * 100);
-  const label   = data.label ?? (prob > 0.5 ? 'Malignant' : 'Benign');
-  const conf    = data.confidence ? (data.confidence * 100).toFixed(1) : pct;
-  const riskCls = prob < 0.35 ? 'low' : prob < 0.65 ? 'mid' : 'high';
-  const riskTxt = prob < 0.35 ? 'Low Risk' : prob < 0.65 ? 'Moderate Risk' : 'High Risk';
-  const verdict = label === 'Malignant'
-    ? 'The classifier indicates a high probability of malignancy. Clinical review and biopsy are strongly recommended.'
-    : 'The classifier indicates a lower malignancy probability. Continued monitoring and clinical correlation are advised.';
+      <div class="horizontal-risk-wrapper" style="position: relative; margin-bottom: 40px;">
+        <div class="risk-bar-bg" style="width: 100%; height: 12px; background: #1e2a3a; border-radius: 6px; overflow: hidden; display: flex;">
+             <div style="width: 33%; height: 100%; background: var(--accent2); opacity: 0.3;"></div>
+             <div style="width: 34%; height: 100%; background: var(--warn); opacity: 0.3;"></div>
+             <div style="width: 33%; height: 100%; background: var(--accent3); opacity: 0.3;"></div>
+        </div>
+        
+        <div style="position: absolute; top: 0; left: 0; height: 12px; width: ${prob}%; background: ${color}; border-radius: 6px; box-shadow: 0 0 15px ${color}; transition: width 1s ease-out;"></div>
+        
+        <div style="position: absolute; top: -25px; left: ${prob}%; transform: translateX(-50%); font-family: var(--mono); font-size: 14px; color: ${color}; font-weight: bold;">
+          ${prob}%
+        </div>
+      </div>
 
-  // SVG semi-circle gauge
-  const R = 80, cx = 110, cy = 100;
-  const startAngle = Math.PI;
-  const sweep = Math.PI * prob;
-  const ex = cx + R * Math.cos(Math.PI + sweep);
-  const ey = cy + R * Math.sin(Math.PI + sweep);
-  const largeArc = sweep > Math.PI / 2 ? 1 : 0;
-  const trackPath = `M ${cx - R} ${cy} A ${R} ${R} 0 0 1 ${cx + R} ${cy}`;
-  const fillPath  = `M ${cx - R} ${cy} A ${R} ${R} 0 ${largeArc} 1 ${ex} ${ey}`;
-  const fillColor = riskCls === 'low' ? '#00f5a0' : riskCls === 'mid' ? '#ffb830' : '#ff5c7a';
-
-  clsBadge.textContent = riskTxt;
-  clsBadge.style.display = 'inline';
-
-  clsContent.innerHTML = `
-    <div class="risk-gauge">
-      <svg viewBox="0 0 220 110">
-        <path d="${trackPath}" fill="none" stroke="#182330" stroke-width="14" stroke-linecap="round"/>
-        <path d="${fillPath}"  fill="none" stroke="${fillColor}" stroke-width="14" stroke-linecap="round"/>
-      </svg>
-      <div class="risk-label">
-        <div class="risk-pct ${riskCls}">${pct}%</div>
-        <div class="risk-lbl">Malignancy Probability</div>
+      <div class="risk-verdict">
+        <div style="font-family: var(--mono); font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 2px;">
+          Prediction Result
+        </div>
+        <h2 style="font-family: var(--syne); font-size: 32px; color: ${color}; margin: 10px 0;">
+          ${data.label.toUpperCase()}
+        </h2>
+        <p style="color: var(--muted); font-size: 13px; max-width: 280px; margin: 0 auto; line-height: 1.5;">
+          The model identifies radiological features consistent with <strong>${data.label}</strong> endometrial carcinoma.
+        </p>
       </div>
     </div>
-    <div class="risk-verdict">
-      <h3>${label} — ${riskTxt}</h3>
-      <p>${verdict}</p>
-    </div>
-    <div style="display:flex;gap:20px;font-family:var(--mono);font-size:11px;flex-wrap:wrap;justify-content:center;">
-      <div><div style="color:var(--muted);font-size:9px;letter-spacing:2px;text-transform:uppercase;margin-bottom:3px">Probability</div><div style="color:${fillColor};font-size:20px;font-weight:700">${pct}%</div></div>
-      <div><div style="color:var(--muted);font-size:9px;letter-spacing:2px;text-transform:uppercase;margin-bottom:3px">Confidence</div><div style="color:var(--accent);font-size:20px;font-weight:700">${conf}%</div></div>
-      <div><div style="color:var(--muted);font-size:9px;letter-spacing:2px;text-transform:uppercase;margin-bottom:3px">Prediction</div><div style="color:#e8f4fa;font-size:20px;font-weight:700">${label}</div></div>
-    </div>
-    <div class="disclaimer">
-      <strong>Research Use Only.</strong> This AI result is not a clinical diagnosis.
-      Always consult a qualified radiologist or oncologist before making medical decisions.
-    </div>`;
+  `;
 }
 
 // ── Download buttons ───────────────────────────────

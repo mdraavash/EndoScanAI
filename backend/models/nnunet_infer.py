@@ -6,14 +6,18 @@ import nibabel as nib
 import torch
 
 # Relative import from parent package
-# Ensure your PYTHONPATH is set to 'backend' so this works
 from utils.image import save_mask_preview
 import config
 
 def run_nnunet_inference(upload_dir: Path, input_paths, modality: str):
-    # 1. Path Verification
-    if not config.NNUNET_MODEL_PATH.exists():
-        return None, None, f'nnUNet model path not found: {config.NNUNET_MODEL_PATH}'
+    # 1. Get the appropriate model path based on modality
+    try:
+        nnunet_model_path = config.get_nnunet_model_path(modality)
+    except ValueError as e:
+        return None, None, str(e)
+    
+    if not nnunet_model_path.exists():
+        return None, None, f'nnUNet {modality.upper()} model path not found: {nnunet_model_path}'
 
     # 2. Prepare input folder (Must be a directory for nnU-Net)
     model_input = upload_dir / 'imagesTs'
@@ -39,8 +43,16 @@ def run_nnunet_inference(upload_dir: Path, input_paths, modality: str):
     infer_out = config.OUTPUT_DIR / f'nnunet_pred_{uuid.uuid4().hex}'
     infer_out.mkdir(parents=True, exist_ok=True)
 
-    # 5. Initialize nnU-Net Predictor
-    # We import here to ensure environment variables from config are loaded first
+    # 5. Set environment variables for the correct model
+    if modality.lower() == 'ct':
+        os.environ['nnUNet_raw'] = os.environ.get('nnUNet_raw_ct', '')
+        os.environ['nnUNet_preprocessed'] = os.environ.get('nnUNet_preprocessed_ct', '')
+        os.environ['nnUNet_results'] = os.environ.get('nnUNet_results_ct', '')
+    else:
+        # For CT+PET, use default env vars (already set in config)
+        pass
+
+    # 6. Initialize nnU-Net Predictor
     from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
 
     predictor = nnUNetPredictor(
@@ -54,21 +66,17 @@ def run_nnunet_inference(upload_dir: Path, input_paths, modality: str):
         allow_tqdm=True,
     )
 
-    # 6. Initialize from folder - FIXING THE ARGUMENT ERROR
+    # 7. Initialize from folder - Get model configuration based on modality
     try:
-        # Note: 'plans_identifier' is often not needed in v2.1+ 
-        # because it is read from the 'dataset.json' in the model folder.
-        # If it fails, try removing plans_identifier entirely.
         predictor.initialize_from_trained_model_folder(
-            str(config.NNUNET_MODEL_PATH),
-            use_folds=(str(config.NNUNET_FOLD),), # Ensure fold is a tuple of strings
+            str(nnunet_model_path),
+            use_folds=(str(config.NNUNET_FOLD),),
             checkpoint_name=config.NNUNET_CHECKPOINT,
-            # Removed plans_identifier to fix your specific error
         )
     except Exception as e:
         return None, None, f'Failed to initialize nnUNet predictor: {str(e)}'
 
-    # 7. Run Inference
+    # 8. Run Inference
     try:
         predictor.predict_from_files(
             str(model_input),
@@ -84,7 +92,7 @@ def run_nnunet_inference(upload_dir: Path, input_paths, modality: str):
     except Exception as e:
         return None, None, f'nnUNet prediction failed: {str(e)}'
 
-    # 8. Post-processing
+    # 9. Post-processing
     outputs = sorted(infer_out.glob('*.nii.gz'), key=lambda p: p.stat().st_mtime, reverse=True)
     if not outputs:
         return None, None, 'nnUNet output mask not found'
@@ -97,7 +105,6 @@ def run_nnunet_inference(upload_dir: Path, input_paths, modality: str):
 
         preview_path = None
         if mask_data.ndim >= 3:
-            # Pass the data to your preview utility
             preview_path = save_mask_preview(mask_data, config.OUTPUT_DIR)
 
         return mask_path, preview_path, None

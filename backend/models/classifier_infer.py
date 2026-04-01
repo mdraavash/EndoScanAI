@@ -1,144 +1,236 @@
 """
 classifier_infer.py
 -------------------
-Binary malignancy classifier for EndoScan AI.
-
-Expects a NIfTI CT (or CT-PET) file.  Extracts the centre axial slice,
-resizes to the model's input size, and runs a forward pass through a
-pretrained ResNet-18 (or whatever checkpoint is configured).
-
-Returns: (probability: float, label: str, confidence: float, error: str|None)
+Uterine cancer grade classifier for EndoScan AI.
 """
 
 from __future__ import annotations
+
+import importlib.util
+import logging
+import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
-import nibabel as nib
+import pandas as pd
+import SimpleITK as sitk
+
 import config
 
+warnings.filterwarnings("ignore")
 
-# ── Internal helpers ──────────────────────────────────────────────────────────
+LOG_LEVEL = logging.INFO
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s  %(levelname)-7s  %(name)s  %(message)s",
+)
+log = logging.getLogger("classifier_infer")
 
-def _load_centre_slice(nifti_path: Path) -> np.ndarray:
-    """Load the centre axial slice from a NIfTI file and return as float32 HxW."""
-    img  = nib.load(str(nifti_path))
-    data = img.get_fdata()
-    if data.ndim == 4:
-        data = data[..., 0]
-    if data.ndim < 3:
-        raise ValueError(f'Expected ≥3D volume, got {data.ndim}D')
-    z = data.shape[2] // 2
-    return data[:, :, z].astype(np.float32)
-
-
-def _normalise(arr: np.ndarray) -> np.ndarray:
-    """Robust percentile normalisation → [0, 1]."""
-    lo, hi = np.percentile(arr, (1, 99))
-    clipped = np.clip(arr, lo, hi)
-    return (clipped - lo) / (hi - lo + 1e-8)
+_BUNDLE    = None
+_PIPELINE  = None
+_FEAT_COLS = None
+_THRESHOLD = None
+_EXTRACTOR = None
 
 
-def _preprocess(nifti_path: Path, img_size: int = 224) -> "torch.Tensor":
-    """Load, normalise and convert a centre slice to a 1×3×H×W tensor."""
+def _register_selector_shim() -> type:
+    """Injects CorrelationLassoSelector so joblib can unpickle the model safely."""
+    p = Path(config.CLASSIFIER_SELECTOR_PATH)
+    if not p.exists():
+        raise FileNotFoundError(f"Selector shim not found: {p}")
+    spec = importlib.util.spec_from_file_location("classifier_selector_shim", str(p))
+    shim = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shim)
+
+    cls = getattr(shim, "CorrelationLassoSelector", None)
+    if cls is None:
+        raise AttributeError("save_model.py must define CorrelationLassoSelector.")
+
+    for mod_name in ("__main__", "__mp_main__", "save_model", "classifier_selector_shim"):
+        mod = sys.modules.setdefault(mod_name, shim)
+        setattr(mod, "CorrelationLassoSelector", cls)
+
+    return cls
+
+
+def _load_bundle() -> None:
+    """Loads the model bundle using the absolute path in config.py."""
+    global _BUNDLE, _PIPELINE, _FEAT_COLS, _THRESHOLD
+    import joblib
     import torch
-    from PIL import Image
 
-    arr   = _load_centre_slice(nifti_path)
-    norm  = _normalise(arr)
-    uint8 = (norm * 255).astype(np.uint8)
-
-    pil   = Image.fromarray(uint8).convert('RGB').resize(
-        (img_size, img_size), Image.BILINEAR
-    )
-    tensor = torch.from_numpy(np.array(pil)).permute(2, 0, 1).float() / 255.0
-
-    # ImageNet-style normalisation (matches most pretrained backbones)
-    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-    std  = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-    tensor = (tensor - mean) / std
-
-    return tensor.unsqueeze(0)   # 1×3×H×W
-
-
-def _build_model():
-    """Build or load the classifier model from config.CLASSIFIER_MODEL_PATH."""
-    import torch
-    import torch.nn as nn
-
+    _register_selector_shim()
+    
+    # PyTorch 2.6+ changed weights_only default to True; we need False for compatibility
+    # with pickled objects from older PyTorch versions
+    original_torch_load = torch.load
+    def torch_load_compat(*args, **kwargs):
+        if 'weights_only' not in kwargs:
+            kwargs['weights_only'] = False
+        return original_torch_load(*args, **kwargs)
+    
+    torch.load = torch_load_compat
     try:
-        from torchvision.models import resnet18
-        model = resnet18(weights=None)
-        model.fc = nn.Linear(model.fc.in_features, 2)   # binary: benign / malignant
-    except Exception as e:
-        raise RuntimeError(f'Could not build ResNet-18: {e}')
+        raw = joblib.load(config.CLASSIFIER_MODEL_PATH)
+    finally:
+        torch.load = original_torch_load
 
-    if config.CLASSIFIER_MODEL_PATH.exists():
-        try:
-            ckpt = torch.load(str(config.CLASSIFIER_MODEL_PATH),
-                              map_location='cpu')
-            # Support both raw state_dict and {'state_dict': …} checkpoints
-            sd = ckpt.get('state_dict', ckpt)
-            model.load_state_dict(sd, strict=False)
-        except Exception as e:
-            raise RuntimeError(f'Failed to load classifier weights: {e}')
+    if isinstance(raw, dict):
+        _BUNDLE    = raw
+        _PIPELINE  = raw["pipeline"]
+        _FEAT_COLS = raw.get("feature_cols")
+        bundle_thr = float(raw.get("threshold", 0.5))
     else:
-        raise FileNotFoundError(
-            f'Classifier model not found: {config.CLASSIFIER_MODEL_PATH}'
-        )
+        log.warning("Bundle is a bare pipeline. Re-run save_model.py.")
+        _BUNDLE    = {}
+        _PIPELINE  = raw
+        _FEAT_COLS = None
+        bundle_thr = 0.5
 
-    return model
+    cfg_thr    = getattr(config, "CLASSIFIER_THRESHOLD", None)
+    _THRESHOLD = cfg_thr if (cfg_thr is not None) else bundle_thr
+
+    log.info(f"Bundle loaded | threshold={_THRESHOLD:.4f} | feature_cols={'Present' if _FEAT_COLS else 'Missing'}")
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────
+def _ensure_model() -> None:
+    if _PIPELINE is not None:
+        return
+    p = Path(config.CLASSIFIER_MODEL_PATH)
+    if not p.exists():
+        raise FileNotFoundError(f"Model bundle not found: {p}")
+    _load_bundle()
 
-def run_classifier_inference(
-    input_paths: list,
-    modality: str
-) -> tuple[float | None, str | None, float | None, str | None]:
-    """
-    Run binary malignancy classification on the first input file.
 
-    Returns
-    -------
-    probability : float  — P(malignant), 0–1
-    label       : str    — 'Malignant' or 'Benign'
-    confidence  : float  — max softmax score (0–1)
-    error       : str | None
-    """
-    import torch
-    import torch.nn.functional as F
+def _read_nifti(nifti_path: Path) -> np.ndarray:
+    arr = sitk.GetArrayFromImage(sitk.ReadImage(str(nifti_path)))
+    if arr.ndim == 2: arr = arr[None, ...]
+    elif arr.ndim == 4:
+        sq  = np.squeeze(arr)
+        arr = sq if sq.ndim == 3 else arr[..., 0]
 
-    if not input_paths:
-        return None, None, None, 'No input files provided'
+    z_ax = int(np.argmin(arr.shape))
+    if z_ax != 0: arr = np.moveaxis(arr, z_ax, 0)
 
+    if arr.dtype == np.uint8: return arr
+    arr  = arr.astype(np.float32)
+    fin  = np.isfinite(arr)
+    arr  = np.where(fin, arr, 0.0)
+    vmin = float(arr[fin].min()) if fin.any() else 0.0
+    vmax = float(arr[fin].max()) if fin.any() else 1.0
+
+    if vmax <= vmin: return np.zeros_like(arr, dtype=np.uint8)
+    return np.clip((arr - vmin) / (vmax - vmin) * 255.0, 0, 255).astype(np.uint8)
+
+
+def _get_extractor():
+    global _EXTRACTOR
+    if _EXTRACTOR is not None: return _EXTRACTOR
+    
+    try:
+        from radiomics import featureextractor
+    except ImportError:
+        try:
+            from radiomics.featureextractor import RadiomicsFeatureExtractor as RFE
+            # Create a module-like object
+            import types
+            featureextractor = types.ModuleType('featureextractor')
+            featureextractor.RadiomicsFeatureExtractor = RFE
+        except ImportError:
+            # Use our stub when real radiomics isn't available
+            from . import radiomics_stub
+            featureextractor = radiomics_stub
+    
+    settings = {
+        "binWidth": 25,
+        "interpolator": sitk.sitkBSpline,
+        "resampledPixelSpacing": None,
+        "verbose": False,
+        "label": 255,
+        "force2D": True,
+        "force2Ddimension": 0,
+    }
+    _EXTRACTOR = featureextractor.RadiomicsFeatureExtractor(**settings)
+    _EXTRACTOR.enableAllFeatures()
+    _EXTRACTOR.enableFeatureClassByName("shape2D")
+    return _EXTRACTOR
+
+
+def _make_mask_255(arr_2d: np.ndarray) -> sitk.Image:
+    fg = ((arr_2d > 127).astype(np.uint8)) * 255
+    if fg.max() == 0: fg = np.full_like(arr_2d, 255, dtype=np.uint8)
+    mask = sitk.GetImageFromArray(fg)
+    mask.SetSpacing((1.0, 1.0))
+    return sitk.Cast(mask, sitk.sitkUInt8)
+
+
+def _extract_slice(arr_2d: np.ndarray, extractor) -> dict:
+    img = sitk.GetImageFromArray(arr_2d.astype(np.float32))
+    img.SetSpacing((1.0, 1.0))
+    result = extractor.execute(img, _make_mask_255(arr_2d))
+    return {k: float(v) for k, v in result.items() if not k.startswith("diagnostics_")}
+
+
+def _process_volume(volume: np.ndarray) -> pd.Series:
+    extractor = _get_extractor()
+    Z = volume.shape[0]
+    slice_features = []
+
+    for z in range(Z):
+        try:
+            feats = _extract_slice(volume[z], extractor)
+            slice_features.append(feats)
+        except Exception as exc:
+            log.warning(f"Slice {z + 1}/{Z} skipped: {exc}")
+
+    if not slice_features:
+        raise ValueError("No slices could be processed from this NIfTI volume.")
+
+    df_sl = pd.DataFrame(slice_features)
+    profile = pd.concat([
+        df_sl.mean().add_suffix("_Mean"),
+        df_sl.max().add_suffix("_Max"),
+        df_sl.std().fillna(0).add_suffix("_Std"),
+    ])
+    return profile
+
+
+def _align_columns(profile: pd.Series) -> np.ndarray:
+    if _FEAT_COLS is None:
+        return profile.values.astype(np.float32).reshape(1, -1)
+    df = pd.DataFrame([profile])
+    df = df.reindex(columns=_FEAT_COLS, fill_value=0.0)
+    return df.values.astype(np.float32)
+
+
+def run_classifier_inference(input_paths: list, modality: str = "CT") -> tuple[float | None, str | None, float | None, str | None]:
+    if not input_paths: return None, None, None, "No input files provided."
     nifti_path = Path(input_paths[0])
-    if not nifti_path.exists():
-        return None, None, None, f'Input file not found: {nifti_path}'
+    if not nifti_path.exists(): return None, None, None, f"Input file not found: {nifti_path}"
+
+    try: _ensure_model()
+    except Exception as exc: return None, None, None, f"Model load failed: {exc}"
+
+    try: volume = _read_nifti(nifti_path)
+    except Exception as exc: return None, None, None, f"NIfTI read failed: {exc}"
+
+    if volume.max() == 0: return None, None, None, "NIfTI volume is entirely zero."
+
+    try: profile = _process_volume(volume)
+    except Exception as exc: return None, None, None, f"Feature extraction failed: {exc}"
 
     try:
-        tensor = _preprocess(nifti_path)
-    except Exception as e:
-        return None, None, None, f'Preprocessing failed: {e}'
+        X = _align_columns(profile)
+        if int((X != 0).sum()) == 0:
+            return None, None, None, "All input features are zero."
+    except Exception as exc: return None, None, None, f"Column alignment failed: {exc}"
 
     try:
-        model = _build_model()
-    except Exception as e:
-        return None, None, None, str(e)
+        proba = _PIPELINE.predict_proba(X)[0]
+        prob_high = float(proba[1])
+        confidence = float(max(proba))
+        label = "High Grade" if prob_high >= _THRESHOLD else "Low Grade"
+    except Exception as exc: return None, None, None, f"Prediction failed: {exc}"
 
-    model.eval()
-    device = config.DEVICE
-    model.to(device)
-    tensor = tensor.to(device)
-
-    try:
-        with torch.no_grad():
-            logits = model(tensor)               # 1×2
-            probs  = F.softmax(logits, dim=1)    # 1×2
-            mal_prob   = float(probs[0, 1])      # probability of class 1 = malignant
-            confidence = float(probs.max())
-            label = 'Malignant' if mal_prob > config.CLASSIFIER_THRESHOLD else 'Benign'
-    except Exception as e:
-        return None, None, None, f'Inference failed: {e}'
-
-    return mal_prob, label, confidence, None
+    return round(prob_high, 4), label, round(confidence, 4), None

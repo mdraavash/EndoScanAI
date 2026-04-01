@@ -4,3 +4,4 @@ debugg/
 .venv/
 *.pt
 *.pth
+NNUNETTEST/
