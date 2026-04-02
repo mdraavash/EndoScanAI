@@ -1,9 +1,4 @@
-/* ═══════════════════════════════════════════════════
-   EndoScan AI — app.js
-   ═══════════════════════════════════════════════════ */
-
 const API_BASE = (() => {
-  // Works whether served by FastAPI (same host:8000) or opened directly
   const o = window.location.origin;
   return o.includes(':8000') ? o : o.replace(/:\d+$/, ':8000');
 })();
@@ -459,7 +454,7 @@ runBtn.addEventListener('click', async () => {
     const fd = new FormData();
     fd.append('modality', state.modality);
     fd.append('model_type', state.model);
-
+:::::::::::::::::::::::::::::::::::::::::::::::::::
     // Pre-read into Blobs to avoid postMessage cloning errors in iframe envs
     for (const f of state.files) {
       const buf  = await f.arrayBuffer();
