@@ -68,6 +68,17 @@ async def predict(
     if model_type not in ['segmentation', 'detection', 'classification']:
         raise HTTPException(status_code=400, detail='Unsupported model_type.')
 
+    # ── Validate file count based on model type ─────────────────────────────
+    if model_type == 'detection':
+        if len(files) != 1:
+            raise HTTPException(status_code=400, detail='Detection model requires exactly ONE file.')
+    
+    if model_type == 'classification':
+        if modality != 'ct':
+            raise HTTPException(status_code=400, detail='Classification is only available for CT modality, not CT+PET.')
+        if len(files) != 1:
+            raise HTTPException(status_code=400, detail='Classification model requires exactly ONE file.')
+
     tmp_dir = None
     try:
         tmp_dir, input_paths = save_uploads(files)

@@ -81,201 +81,101 @@ def convert_nifti_to_2d_images(nifti_path: Path, output_dir: Path, modality_labe
 
 
 def run_yolo_inference(input_paths, modality: str):
-    """Run YOLO detection on input images with multimodal fusion for CT+PET.
+    """Run YOLO detection on a single input image.
 
-    For CT+PET modality (true multimodal fusion):
-        - Process PET images first to get spatial priors
-        - Use PET detections as anchors for CT processing
-        - Apply spatial attention and fusion between modalities
-        - Combine detections with confidence weighting
+    The YOLO model was trained on mixed CT+PET dataset but processes images independently.
+    This function accepts a SINGLE file from either CT or PET modality.
 
-    For CT modality:
-        - Single image detection
+    Args:
+        input_paths: List with ONE file path (CT or PET image)
+        modality: 'ct' or 'ctpet' (determines which modality the single file is)
+
+    Returns:
+        detections: List of detection results
+        inference_images: List of annotated visualization images
+        error: Error message if any
     """
     if not config.YOLO_MODEL_PATH.exists():
         return None, None, f'YOLO model not found at {config.YOLO_MODEL_PATH}'
+
+    # Validate single input file
+    if not input_paths or len(input_paths) == 0:
+        return None, None, 'No input file provided for YOLO detection'
+    
+    if len(input_paths) > 1:
+        return None, None, f'YOLO detection accepts only ONE file. Got {len(input_paths)} files.'
+
+    input_file = input_paths[0]
+    if not input_file.exists():
+        return None, None, f'Input file not found: {input_file}'
 
     # Create working directory for YOLO processing
     work_dir = config.OUTPUT_DIR / f'yolo_input_{uuid.uuid4().hex}'
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    # Convert NIfTI files to 2D PNG images
-    yolo_input_paths = []
-    pet_detections = []  # Store PET detections for multimodal fusion
+    # Convert NIfTI file to 2D PNG images
+    # Determine modality label based on input
+    if modality.lower() == 'ctpet':
+        # For CT+PET, the single input could be either CT or PET
+        # We'll process it as-is without assuming which one
+        modality_label = 'CT+PET'
+    else:
+        modality_label = 'CT'
 
-    modality_labels = {
-        'ct': ['CT'],
-        'ctpet': ['PET', 'CT']
-    }
-    labels = modality_labels.get(modality.lower(), ['Image'])
-
-    for idx, p in enumerate(input_paths):
-        if not p.exists():
-            continue
-
-        label = labels[idx] if idx < len(labels) else f'Image{idx}'
-        is_nifti = p.suffix.lower() in ['.nii', '.gz'] or p.name.lower().endswith('.nii.gz')
-        if is_nifti:
-            png_results, error = convert_nifti_to_2d_images(p, work_dir, modality_label=label)
-            if error:
-                return None, None, f'Failed to convert {p.name}: {error}'
-            yolo_input_paths.extend(png_results)
-        else:
-            dst = work_dir / p.name
-            shutil.copy2(p, dst)
-            yolo_input_paths.append((dst, label))
+    is_nifti = input_file.suffix.lower() in ['.nii', '.gz'] or input_file.name.lower().endswith('.nii.gz')
+    
+    if is_nifti:
+        yolo_input_paths, error = convert_nifti_to_2d_images(input_file, work_dir, modality_label=modality_label)
+        if error:
+            return None, None, f'Failed to convert {input_file.name}: {error}'
+    else:
+        dst = work_dir / input_file.name
+        shutil.copy2(input_file, dst)
+        yolo_input_paths = [(dst, modality_label)]
 
     if not yolo_input_paths:
-        return None, None, 'No valid input files for YOLO inference'
+        return None, None, 'No valid input images generated for YOLO detection'
 
-    # Load YOLO model once
+    # Load YOLO model and run inference
     model = YOLO(str(config.YOLO_MODEL_PATH))
     detections = []
     inference_images = []
 
-    # ── For CT+PET: Process PET first, then CT with multimodal fusion ─────
-    if modality.lower() == 'ctpet':
-        # Separate PET and CT inputs
-        pet_inputs = [(path, label) for path, label in yolo_input_paths if label == 'PET']
-        ct_inputs = [(path, label) for path, label in yolo_input_paths if label == 'CT']
+    try:
+        for image_path, label in yolo_input_paths:
+            results = model.predict(source=str(image_path), conf=config.YOLO_CONFIDENCE, save=False)
+            annotated_path = None
 
-        # Step 1: Process PET images to get spatial priors
-        pet_detections = []
-        pet_inference_images = []
+            for r in results:
+                # Save overlayed detection image
+                if annotated_path is None:
+                    plot_image = r.plot()
+                    annotated_name = f'yolo_out_{label}_{image_path.stem}_{uuid.uuid4().hex}.png'
+                    annotated_path = config.OUTPUT_DIR / annotated_name
+                    config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+                    Image.fromarray(plot_image).save(str(annotated_path), format='PNG')
+                    inference_images.append({
+                        'image': image_path.name,
+                        'modality': label,
+                        'url': f'/download/{annotated_name}'
+                    })
 
-        for image_path, modality_label in pet_inputs:
-            try:
-                results = model.predict(source=str(image_path), conf=config.YOLO_CONFIDENCE, save=False)
-                annotated_path = None
+                # Extract detections
+                for b in r.boxes:
+                    cx1, cy1, cx2, cy2 = map(float, b.xyxy[0])
+                    detection = {
+                        'image': image_path.name,
+                        'modality': label,
+                        'class': model.names[int(b.cls[0])],
+                        'confidence': float(b.conf[0]),
+                        'x1': cx1,
+                        'y1': cy1,
+                        'x2': cx2,
+                        'y2': cy2
+                    }
+                    detections.append(detection)
 
-                for r in results:
-                    # Save overlayed detection image
-                    if annotated_path is None:
-                        plot_image = r.plot()
-                        annotated_name = f'yolo_out_{modality_label}_{image_path.stem}_{uuid.uuid4().hex}.png'
-                        annotated_path = config.OUTPUT_DIR / annotated_name
-                        config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-                        Image.fromarray(plot_image).save(str(annotated_path), format='PNG')
-                        pet_inference_images.append({
-                            'image': image_path.name,
-                            'modality': modality_label,
-                            'url': f'/download/{annotated_name}'
-                        })
-
-                    for b in r.boxes:
-                        cx1, cy1, cx2, cy2 = map(float, b.xyxy[0])
-                        detection = {
-                            'image': image_path.name,
-                            'modality': modality_label,
-                            'class': model.names[int(b.cls[0])],
-                            'confidence': float(b.conf[0]),
-                            'x1': cx1,
-                            'y1': cy1,
-                            'x2': cx2,
-                            'y2': cy2,
-                            'slice_info': image_path.stem  # Track which slice this is from
-                        }
-                        pet_detections.append(detection)
-
-            except Exception as e:
-                return None, None, f'YOLO prediction failed on PET {modality_label}: {str(e)}'
-
-        # Step 2: Process CT images with PET spatial priors
-        ct_detections = []
-        ct_inference_images = []
-
-        for image_path, modality_label in ct_inputs:
-            try:
-                # Get PET detections for this slice (if any)
-                slice_pet_detections = [
-                    d for d in pet_detections
-                    if d['slice_info'] in image_path.stem
-                ]
-
-                # Run YOLO on CT with potentially adjusted confidence
-                # If we have PET priors, we can be more confident in CT detections
-                adjusted_conf = config.YOLO_CONFIDENCE
-                if slice_pet_detections:
-                    # Lower confidence threshold when we have PET priors
-                    adjusted_conf = max(0.1, config.YOLO_CONFIDENCE * 0.8)
-
-                results = model.predict(source=str(image_path), conf=adjusted_conf, save=False)
-                annotated_path = None
-
-                for r in results:
-                    # Save overlayed detection image
-                    if annotated_path is None:
-                        plot_image = r.plot()
-                        annotated_name = f'yolo_out_{modality_label}_{image_path.stem}_{uuid.uuid4().hex}.png'
-                        annotated_path = config.OUTPUT_DIR / annotated_name
-                        config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-                        Image.fromarray(plot_image).save(str(annotated_path), format='PNG')
-                        ct_inference_images.append({
-                            'image': image_path.name,
-                            'modality': modality_label,
-                            'url': f'/download/{annotated_name}',
-                            'fusion_info': f'Fused with {len(slice_pet_detections)} PET priors'
-                        })
-
-                    for b in r.boxes:
-                        cx1, cy1, cx2, cy2 = map(float, b.xyxy[0])
-                        detection = {
-                            'image': image_path.name,
-                            'modality': modality_label,
-                            'class': model.names[int(b.cls[0])],
-                            'confidence': float(b.conf[0]),
-                            'x1': cx1,
-                            'y1': cy1,
-                            'x2': cx2,
-                            'y2': cy2,
-                            'fusion_applied': len(slice_pet_detections) > 0,
-                            'pet_priors_count': len(slice_pet_detections)
-                        }
-                        ct_detections.append(detection)
-
-            except Exception as e:
-                return None, None, f'YOLO prediction failed on CT {modality_label}: {str(e)}'
-
-        # Combine results
-        detections = pet_detections + ct_detections
-        inference_images = pet_inference_images + ct_inference_images
-
-    # ── For CT only: Standard single-modality processing ───────────────────
-    else:
-        for image_path, modality_label in yolo_input_paths:
-            try:
-                results = model.predict(source=str(image_path), conf=config.YOLO_CONFIDENCE, save=False)
-                annotated_path = None
-
-                for r in results:
-                    # Save overlayed detection image
-                    if annotated_path is None:
-                        plot_image = r.plot()
-                        annotated_name = f'yolo_out_{modality_label}_{image_path.stem}_{uuid.uuid4().hex}.png'
-                        annotated_path = config.OUTPUT_DIR / annotated_name
-                        config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-                        Image.fromarray(plot_image).save(str(annotated_path), format='PNG')
-                        inference_images.append({
-                            'image': image_path.name,
-                            'modality': modality_label,
-                            'url': f'/download/{annotated_name}'
-                        })
-
-                    for b in r.boxes:
-                        cx1, cy1, cx2, cy2 = map(float, b.xyxy[0])
-                        detection = {
-                            'image': image_path.name,
-                            'modality': modality_label,
-                            'class': model.names[int(b.cls[0])],
-                            'confidence': float(b.conf[0]),
-                            'x1': cx1,
-                            'y1': cy1,
-                            'x2': cx2,
-                            'y2': cy2
-                        }
-                        detections.append(detection)
-
-            except Exception as e:
-                return None, None, f'YOLO prediction failed on {modality_label}: {str(e)}'
+    except Exception as e:
+        return None, None, f'YOLO prediction failed: {str(e)}'
 
     return detections, inference_images, None

@@ -76,17 +76,54 @@ document.querySelectorAll('.tog').forEach(btn => {
     const g = btn.dataset.group;
     document.querySelectorAll(`.tog[data-group="${g}"]`).forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    
     if (g === 'modality') {
       state.modality = btn.dataset.value;
-      const max = state.modality === 'ctpet' ? 2 : 1;
-      fileHint.textContent = `max ${max}`;
+      updateFileHint();
+      
+      // Disable classification for CT+PET modality
+      const clsBtn = document.querySelector('.tog[data-group="model"][data-value="classification"]');
+      if (state.modality === 'ctpet') {
+        clsBtn.disabled = true;
+        clsBtn.title = 'Classification only available for CT modality';
+        clsBtn.style.opacity = '0.5';
+        clsBtn.style.cursor = 'not-allowed';
+        // If classification was selected, switch to segmentation
+        if (state.model === 'classification') {
+          document.querySelector('.tog[data-group="model"][data-value="segmentation"]').click();
+        }
+      } else {
+        clsBtn.disabled = false;
+        clsBtn.title = '';
+        clsBtn.style.opacity = '1';
+        clsBtn.style.cursor = 'pointer';
+      }
+      
       // Re-validate existing selection
       if (state.files.length) handleFiles(state.files);
-    } else {
+    } else if (g === 'model') {
       state.model = btn.dataset.value;
+      updateFileHint();
+      // Re-validate existing selection
+      if (state.files.length) handleFiles(state.files);
     }
   });
 });
+
+function updateFileHint() {
+  // Detection always requires exactly 1 file
+  // Classification requires 1 file and CT modality
+  // Segmentation can take 1 or 2 files based on modality
+  if (state.model === 'detection') {
+    fileHint.textContent = 'max 1';
+  } else if (state.model === 'classification') {
+    fileHint.textContent = 'max 1';
+  } else {
+    // Segmentation
+    const max = state.modality === 'ctpet' ? 2 : 1;
+    fileHint.textContent = `max ${max}`;
+  }
+}
 
 // ── File handling ──────────────────────────────────
 // Input is hidden (display:none). Chrome blocks opacity:0 overlays from
@@ -108,11 +145,26 @@ dropzone.addEventListener('drop', e => {
 });
 
 function handleFiles(files) {
-  const max = state.modality === 'ctpet' ? 2 : 1;
+  // Determine max files based on model type
+  let max = 1;
+  let description = 'file';
+  
+  if (state.model === 'detection') {
+    max = 1;
+    description = 'file (CT or PET)';
+  } else if (state.model === 'classification') {
+    max = 1;
+    description = 'CT file';
+  } else {
+    // Segmentation
+    max = state.modality === 'ctpet' ? 2 : 1;
+    description = state.modality === 'ctpet' ? 'files (CT + PET)' : 'CT file';
+  }
+  
   clearErr();
   if (files.length > max) {
-    showErr(`${state.modality.toUpperCase()} expects ${max} file(s). You selected ${files.length}. Please select only ${max === 1 ? 'the CT file' : 'CT + PET files'}.`);
-    log(`Too many files (max ${max} for ${state.modality.toUpperCase()})`, 'err');
+    showErr(`${state.model.charAt(0).toUpperCase() + state.model.slice(1)} expects ${max} ${description}. You selected ${files.length}. Please select only ${max === 1 ? 'one' : max} file(s).`);
+    log(`Too many files (max ${max} for ${state.model})`, 'err');
     fileInput.value = '';
     fileList.innerHTML = '';
     state.files = [];
@@ -443,4 +495,9 @@ runBtn.addEventListener('click', async () => {
   } finally {
     runBtn.disabled = false;
   }
+});
+
+// ── Initialize UI state on page load ───────────────
+document.addEventListener('DOMContentLoaded', () => {
+  updateFileHint();
 });
